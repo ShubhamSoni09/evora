@@ -1,26 +1,58 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --evorabg: #fffef8;
+  --evorasurface: #fff9ee;
+  --evoraborder: rgba(0, 0, 0, 0.07);
+  --evoragold: #c49a30;
+  --evoracream: #7a5010;
+  --evoragoldmid: #b8840f;
+  --evoraglow: rgba(196, 154, 48, 0.28);
+  --evoraamber: #d97706;
+  --evoragreen: #059669;
+  --evorared: #dc2626;
+  --foreground: #17110a;
+  --muted: rgba(23, 17, 10, 0.4);
 }
 
 @theme inline {
-  --color-background: var(--background);
+  --color-background: var(--evorabg);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
-  background: var(--background);
+  background: var(--evorabg);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fade-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+@keyframes glow-ring {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(196,154,48,0.4), 0 0 16px rgba(196,154,48,0.2); }
+  50%       { box-shadow: 0 0 0 5px rgba(196,154,48,0.2), 0 0 28px rgba(196,154,48,0.3); }
+}
+.glow-ring { animation: glow-ring 1.8s ease-in-out infinite; }
+
+@keyframes dot-breathe {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.2; transform: scale(0.7); }
+}
+.dot-1 { animation: dot-breathe 1.4s ease-in-out infinite 0s; }
+.dot-2 { animation: dot-breathe 1.4s ease-in-out infinite 0.22s; }
+.dot-3 { animation: dot-breathe 1.4s ease-in-out infinite 0.44s; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; }

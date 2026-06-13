@@ -1,65 +1,84 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import EvoraChat from "@/components/ClaraChat";
+import EvoraDashboard from "@/components/CaregiverDashboard";
+import FamilyPortal from "@/components/FamilyPortal";
+import UserNav, { type SessionUser } from "@/components/UserNav";
+import LoginScreen from "@/components/LoginScreen";
+import SponsorFooter from "@/components/SponsorFooter";
+import { DEFAULT_MEMORIES } from "@/lib/mock-memories";
+import type { Memory } from "@/lib/mock-memories";
+import type { Alert, Message } from "@/lib/types";
+import { DOMAINS } from "@/lib/domains";
 
 export default function Home() {
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [memories, setMemories] = useState<Memory[]>(DEFAULT_MEMORIES);
+
+  const loadSession = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth/me");
+      const data = await res.json();
+      setUser(data.user ?? null);
+    } catch {
+      setUser(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSession();
+  }, [loadSession]);
+
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setUser(null);
+  }
+
+  function onAlert(a: Omit<Alert, "id" | "timestamp">) {
+    setAlerts((prev) => [
+      { id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(), ...a },
+      ...prev,
+    ]);
+  }
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#fffdf8", color: "#b0a480", fontSize: 13 }}>
+        Loading…
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen onSuccess={loadSession} />;
+  }
+
+  const highAlerts = alerts.filter((a) => a.severity === "high").length;
+  const theme = DOMAINS[user.domain];
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+    <div style={{ background: theme.bg, minHeight: "100dvh", color: "#17110a", paddingBottom: 36, transition: "background 0.35s ease" }}>
+      <UserNav user={user} onLogout={handleLogout} alertCount={highAlerts} />
+
+      <main style={{ paddingTop: user.domain === "patient" ? 0 : 72 }}>
+        {user.domain === "patient" && (
+          <EvoraChat messages={messages} setMessages={setMessages} memories={memories} onAlert={onAlert} />
+        )}
+        {user.domain === "caretaker" && (
+          <EvoraDashboard user={user} messages={messages} setMessages={setMessages} alerts={alerts} memories={memories} setMemories={setMemories} />
+        )}
+        {user.domain === "family" && (
+          <FamilyPortal user={user} messages={messages} alerts={alerts} memories={memories} setMemories={setMemories} />
+        )}
       </main>
+
+      <SponsorFooter />
     </div>
   );
 }
