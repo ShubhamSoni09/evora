@@ -2,6 +2,8 @@
 
 AI dementia companion for patients, caregivers, and family — voice calls, emotional support, and clinical oversight.
 
+**Repository:** [github.com/ShubhamSoni09/evora](https://github.com/ShubhamSoni09/evora)
+
 ## Quick start
 
 ```bash
