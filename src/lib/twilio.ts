@@ -7,6 +7,11 @@ import { buildTtsPlayUrl } from "./tts-playback-url";
 import { getPublicAppUrl } from "./app-url";
 import { createPhoneSession } from "./phone-call-session";
 import { buildStartCallUrl } from "./twilio-voice-twiml";
+import { getSessionMemories } from "./memory-store";
+import {
+  buildFamilyBriefingLines,
+  buildPatientPhoneOpenerParts,
+} from "./phone-opener";
 
 /** Fallback when ElevenLabs playback URLs are unavailable */
 const EVORA_TWILIO_VOICE = "Polly.Ruth-Neural";
@@ -56,8 +61,7 @@ function buildPollyTwiml(parts: string[]) {
   );
 }
 
-function buildElevenLabsTwiml(parts: string[]) {
-  const sessionId = registerTtsSession(parts);
+function buildElevenLabsTwiml(parts: string[], sessionId: string) {
   const segments = parts
     .map((_, i) => buildTtsPlayUrl(sessionId, i))
     .filter((url): url is string => Boolean(url));
@@ -73,9 +77,13 @@ function buildElevenLabsTwiml(parts: string[]) {
   return `<Response>${body}</Response>`;
 }
 
-function buildVoiceTwiml(parts: string[]) {
+async function buildVoiceTwiml(parts: string[]) {
   const useElevenLabs = canUseElevenLabsForPhone() && getPublicAppUrl();
-  return useElevenLabs ? buildElevenLabsTwiml(parts) : buildPollyTwiml(parts);
+  if (useElevenLabs) {
+    const sessionId = await registerTtsSession(parts);
+    return buildElevenLabsTwiml(parts, sessionId);
+  }
+  return buildPollyTwiml(parts);
 }
 
 function fromNumber() {
@@ -84,20 +92,20 @@ function fromNumber() {
   return from;
 }
 
-function buildCaregiverAlertTwiml(reason: string, summary?: string) {
+async function buildCaregiverAlertTwiml(reason: string, summary?: string) {
   const detail = summary?.trim() || reason;
   const msg = `Urgent evora alert for ${PATIENT_NAME}. ${detail}. Please check on ${PATIENT_NAME.split(" ")[0]} when you can.`;
   return buildVoiceTwiml([msg, msg]);
 }
 
-function buildProactiveTwiml(greeting: string) {
+async function buildProactiveTwimlParts(openerParts: string[]) {
   return buildVoiceTwiml([
-    greeting,
+    ...openerParts,
     "I'm so glad you picked up. What's been on your mind?",
   ]);
 }
 
-function buildCaregiverCheckInTwiml(parts: string[]) {
+async function buildCaregiverCheckInTwiml(parts: string[]) {
   return buildVoiceTwiml([
     ...parts,
     `That's everything for now. Anything on your mind about ${PATIENT_NAME.split(" ")[0]}, or anything you'd like me to keep an eye on?`,
@@ -117,12 +125,14 @@ export async function callPatient(
   const client = getClient();
   if (!client) throw new Error("Twilio not configured");
 
+  const memories = await getSessionMemories();
+  const openerParts = buildPatientPhoneOpenerParts(greeting, memories);
   const base = webhookBase ?? getPublicAppUrl();
   const startUrl = canInteractivePhoneCalls(base)
     ? buildStartCallUrl(
-        createPhoneSession({
+        await createPhoneSession({
           role: "patient",
-          openerParts: [greeting],
+          openerParts,
           webhookBase: base,
         }),
         base
@@ -141,7 +151,7 @@ export async function callPatient(
   return client.calls.create({
     to,
     from: fromNumber(),
-    twiml: buildProactiveTwiml(greeting),
+    twiml: await buildProactiveTwimlParts(openerParts),
   });
 }
 
@@ -162,8 +172,12 @@ export async function callCaregiverCheckIn(
           `Hey James, it's evora. I wanted to catch you up on how ${PATIENT_NAME.split(" ")[0]}'s been doing.`,
       ];
 
+  const memories = await getSessionMemories();
+  const familyLines = buildFamilyBriefingLines(memories);
+
   const openerParts = [
     ...parts,
+    ...familyLines,
     `That's everything for now.`,
     `Anything on your mind about ${PATIENT_NAME.split(" ")[0]}, or anything you'd like me to keep an eye on?`,
   ];
@@ -171,7 +185,7 @@ export async function callCaregiverCheckIn(
   const base = webhookBase ?? getPublicAppUrl();
   const startUrl = canInteractivePhoneCalls(base)
     ? buildStartCallUrl(
-        createPhoneSession({
+        await createPhoneSession({
           role: "caregiver",
           openerParts,
           maxTurns: 5,
@@ -193,7 +207,7 @@ export async function callCaregiverCheckIn(
   return client.calls.create({
     to,
     from: fromNumber(),
-    twiml: buildCaregiverCheckInTwiml(parts),
+    twiml: await buildCaregiverCheckInTwiml([...parts, ...familyLines]),
   });
 }
 
@@ -207,7 +221,7 @@ export async function callCaregiver(reason: string, summary?: string, to?: strin
   return client.calls.create({
     to: phone,
     from: fromNumber(),
-    twiml: buildCaregiverAlertTwiml(reason, summary),
+    twiml: await buildCaregiverAlertTwiml(reason, summary),
   });
 }
 

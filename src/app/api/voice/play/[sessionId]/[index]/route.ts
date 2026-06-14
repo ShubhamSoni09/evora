@@ -13,7 +13,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
     return new Response("Invalid segment", { status: 400 });
   }
 
-  const text = getTtsSessionPart(sessionId, index);
+  const text = await getTtsSessionPart(sessionId, index);
   if (!text) return new Response("Session expired", { status: 404 });
 
   try {

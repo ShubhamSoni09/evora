@@ -14,6 +14,8 @@ export async function GET() {
       provider === "elevenlabs"
         ? process.env.ELEVENLABS_MODEL ?? "eleven_flash_v2_5"
         : "xai-ara",
+    voiceId: process.env.ELEVENLABS_VOICE_ID ?? "XrExE9yKIg1WjnnlVkGX",
+    stt: "browser-web-speech + xai-grok fallback",
     phoneVoice,
     hint: provider
       ? null

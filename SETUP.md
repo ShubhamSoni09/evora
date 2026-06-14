@@ -78,10 +78,29 @@ npx vercel --prod
 | `CAREGIVER_PHONE` | For phone | Caregiver number |
 | `INNGEST_EVENT_KEY` | For workflows | Inngest dashboard |
 | `INNGEST_SIGNING_KEY` | For workflows | Inngest dashboard |
+| `NEXT_PUBLIC_SUPABASE_URL` | Persistence | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Persistence | Supabase service role key |
+| `AUTH_SECRET` | **Yes (prod)** | Long random string for session cookies |
+| `AUTH_PASSWORD_PATIENT` | **Yes (prod)** | Login password for Margaret |
+| `AUTH_PASSWORD_CARETAKER` | **Yes (prod)** | Login password for James |
+| `AUTH_PASSWORD_FAMILY` | **Yes (prod)** | Login password for Sarah |
 
 On Vercel, two-way phone calls work automatically (`VERCEL_URL` is set). No ngrok needed.
 
 - In Inngest dashboard: add your Vercel URL as the production endpoint (`https://your-app.vercel.app/api/inngest`)
+
+## Production checklist
+
+Before going live on Vercel:
+
+1. Set all **auth** env vars (`AUTH_SECRET`, `AUTH_PASSWORD_*`) — demo passwords are disabled in production
+2. Run the latest [`supabase/schema.sql`](./supabase/schema.sql) — includes `phone_sessions` and `tts_sessions` tables required for two-way Twilio on serverless
+3. Set `PATIENT_PHONE`, `CAREGIVER_PHONE`, and all Twilio keys
+4. Confirm Twilio webhook URLs point to `https://your-app.vercel.app/api/twilio/voice` (automatic when using outbound API)
+5. Deploy with `npx vercel --prod`
+6. Test login for all three portals, in-app voice, and a phone call
+
+Copy [`.env.example`](./.env.example) as a template for all variables.
 
 ## Demo flow
 1. Patient taps **call evora** → Inngest logs `evora/call-started`
@@ -136,4 +155,48 @@ Caregiver dashboard **call now** rings the patient immediately. Scheduled check-
 ## Optional
 ```
 DOCTOR_PHONE=+1...               # also notified on escalations
+```
+
+## 5. Supabase (persistent messages, family notes, alerts)
+
+Without Supabase, data lives in memory and resets when the server restarts. With Supabase, Sarah's notes, Margaret's conversation, and caregiver alerts persist across devices and deploys.
+
+### Create the database
+
+1. Go to [supabase.com](https://supabase.com) → **New project**
+2. Open **SQL Editor** → **New query**
+3. Paste and run the full script from [`supabase/schema.sql`](./supabase/schema.sql)
+4. Go to **Project Settings → API** and copy:
+   - **Project URL**
+   - **service_role** key (secret — server only)
+
+### Environment variables
+
+Add to `.env.local` and Vercel:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+```
+
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` is optional for now — the app uses the service role on API routes only.
+
+Restart the dev server after adding keys. The app falls back to in-memory storage if Supabase is not configured.
+
+### What's stored
+
+| Table | Data |
+|-------|------|
+| `messages` | Patient ↔ evora conversation (syncs to caregiver dashboard) |
+| `memories` | Family notes + memory anchors |
+| `alerts` | Escalation alerts |
+| `phone_sessions` | Two-way Twilio call state (serverless-safe) |
+| `tts_sessions` | ElevenLabs audio segments for phone playback |
+
+### Verify
+
+```bash
+curl http://localhost:3000/api/session/memories
+curl http://localhost:3000/api/session/messages
+curl http://localhost:3000/api/session/alerts
 ```

@@ -12,6 +12,8 @@ import {
   PATIENT_FAREWELL,
 } from "@/lib/phone-conversation";
 import { syncSessionMessages } from "@/lib/live-session";
+import { getSessionMemories } from "@/lib/memory-store";
+import { validateTwilioWebhook } from "@/lib/twilio-webhook";
 import {
   buildPhoneFarewellTwiml,
   buildPhoneReplyAndFarewellTwiml,
@@ -20,6 +22,7 @@ import {
 } from "@/lib/twilio-voice-twiml";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 function twimlResponse(xml: string) {
   return new Response(xml, {
@@ -52,36 +55,43 @@ async function maybeEscalate(
 
 /** Twilio Gather callback — each spoken turn from patient or caregiver */
 export async function POST(req: Request) {
+  const form = await req.formData();
+  const params: Record<string, string> = {};
+  form.forEach((value, key) => {
+    params[key] = value.toString();
+  });
+  if (!validateTwilioWebhook(req, params)) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
   const sessionId = new URL(req.url).searchParams.get("session");
   if (!sessionId) {
     return twimlResponse(`<Response><Say>Sorry, something went wrong.</Say></Response>`);
   }
 
-  const session = getPhoneSession(sessionId);
+  const session = await getPhoneSession(sessionId);
   const turnUrl = buildTurnActionUrl(sessionId, session?.webhookBase);
   if (!session || !turnUrl) {
     return twimlResponse(`<Response><Say>This call has ended.</Say></Response>`);
   }
 
   const base = session.webhookBase;
-
-  const form = await req.formData();
   const speech = form.get("SpeechResult")?.toString()?.trim() ?? "";
 
   if (!speech) {
     const reprompts = session.reprompts + 1;
     if (reprompts >= 2) {
       const farewell = session.role === "patient" ? PATIENT_FAREWELL : CAREGIVER_FAREWELL;
-      return twimlResponse(buildPhoneFarewellTwiml(farewell, base));
+      return twimlResponse(await buildPhoneFarewellTwiml(farewell, base));
     }
-    updatePhoneSession(sessionId, { reprompts });
-    return twimlResponse(buildPhoneTurnTwiml(NO_INPUT_PROMPT, turnUrl, base));
+    await updatePhoneSession(sessionId, { reprompts });
+    return twimlResponse(await buildPhoneTurnTwiml(NO_INPUT_PROMPT, turnUrl, base));
   }
 
   if (isGoodbyePhrase(speech)) {
     const farewell = session.role === "patient" ? PATIENT_FAREWELL : CAREGIVER_FAREWELL;
-    appendPhoneMessages(sessionId, [{ role: "user", content: speech }]);
-    return twimlResponse(buildPhoneFarewellTwiml(farewell, base));
+    await appendPhoneMessages(sessionId, [{ role: "user", content: speech }]);
+    return twimlResponse(await buildPhoneFarewellTwiml(farewell, base));
   }
 
   const userMsg = { role: "user" as const, content: speech };
@@ -92,7 +102,8 @@ export async function POST(req: Request) {
   let escalation: { severity: string; reason: string } | undefined;
 
   try {
-    const reply = await generatePhoneReply(session.role, history);
+    const memories = await getSessionMemories();
+    const reply = await generatePhoneReply(session.role, history, memories);
     replyText = reply.text;
     escalation = reply.escalation;
   } catch (err) {
@@ -103,14 +114,14 @@ export async function POST(req: Request) {
         : "I'm here. What would you like to know about Margaret?";
   }
 
-  appendPhoneMessages(sessionId, [
+  await appendPhoneMessages(sessionId, [
     userMsg,
     { role: "assistant", content: replyText },
   ]);
 
   if (session.role === "patient") {
-    const updated = getPhoneSession(sessionId);
-    if (updated) syncSessionMessages(updated.messages);
+    const updated = await getPhoneSession(sessionId);
+    if (updated) await syncSessionMessages(updated.messages);
   }
 
   if (escalation) {
@@ -124,12 +135,12 @@ export async function POST(req: Request) {
 
   const maxTurns = session.maxTurns;
   const ending = turnCount >= maxTurns;
-  updatePhoneSession(sessionId, { turnCount, reprompts: 0 });
+  await updatePhoneSession(sessionId, { turnCount, reprompts: 0 });
 
   if (ending) {
     const farewell = session.role === "patient" ? PATIENT_FAREWELL : CAREGIVER_FAREWELL;
-    return twimlResponse(buildPhoneReplyAndFarewellTwiml(replyText, farewell, base));
+    return twimlResponse(await buildPhoneReplyAndFarewellTwiml(replyText, farewell, base));
   }
 
-  return twimlResponse(buildPhoneTurnTwiml(replyText, turnUrl, base));
+  return twimlResponse(await buildPhoneTurnTwiml(replyText, turnUrl, base));
 }

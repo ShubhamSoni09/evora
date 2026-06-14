@@ -35,18 +35,33 @@ export default function FamilyPortal({
 
   function sendMessage() {
     if (!draft.trim()) return;
-    setMemories((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        type: "family",
-        label: "Message from family",
-        content: draft.trim(),
-      },
-    ]);
+    const text = draft.trim();
     setDraft("");
     setSent(true);
     setTimeout(() => setSent(false), 3000);
+    fetch("/api/session/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        familyNote: text,
+        familyLabel: `Message from ${user.displayName.split(" ")[0]}`,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data: { memories?: Memory[] }) => {
+        if (data.memories) setMemories(data.memories);
+      })
+      .catch(() => {
+        setMemories((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            type: "family",
+            label: "Message from family",
+            content: text,
+          },
+        ]);
+      });
   }
 
   const card: React.CSSProperties = {

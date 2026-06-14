@@ -1,8 +1,12 @@
+import { requireRoles } from "@/lib/api-auth";
 import { generateCognitionReport } from "@/lib/xai";
 import { extractTopics, getSentiment } from "@/lib/topic-map";
 import type { Message } from "@/lib/types";
 
 export async function POST(req: Request) {
+  const auth = await requireRoles("caretaker");
+  if (auth instanceof Response) return auth;
+
   const { messages } = await req.json() as { messages: Message[] };
   const topics   = extractTopics(messages, 5);
   const sentiment = getSentiment(messages);

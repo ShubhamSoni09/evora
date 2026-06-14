@@ -8,15 +8,6 @@ const VoiceResponse = twilio.twiml.VoiceResponse;
 const POLLY_VOICE = "Polly.Ruth-Neural";
 const NO_INPUT_FALLBACK = "I did not catch that. We can talk again soon. Take care.";
 
-function escapeXml(s: string) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
 function soften(text: string) {
   return text
     .replace(/[—–…]/g, ", ")
@@ -25,10 +16,14 @@ function soften(text: string) {
     .trim();
 }
 
-function playParts(response: twilio.twiml.VoiceResponse, parts: string[], baseUrl?: string | null) {
+async function playParts(
+  response: twilio.twiml.VoiceResponse,
+  parts: string[],
+  baseUrl?: string | null
+) {
   const useElevenLabs = canUseElevenLabsForPhone() && (baseUrl ?? getPublicAppUrl());
   if (useElevenLabs) {
-    const sessionId = registerTtsSession(parts);
+    const sessionId = await registerTtsSession(parts);
     for (let i = 0; i < parts.length; i++) {
       const url = buildTtsPlayUrl(sessionId, i, baseUrl);
       if (url) response.play(url);
@@ -43,8 +38,12 @@ function playParts(response: twilio.twiml.VoiceResponse, parts: string[], baseUr
   }
 }
 
-function playOne(response: twilio.twiml.VoiceResponse, text: string, baseUrl?: string | null) {
-  playParts(response, [text], baseUrl);
+async function playOne(
+  response: twilio.twiml.VoiceResponse,
+  text: string,
+  baseUrl?: string | null
+) {
+  await playParts(response, [text], baseUrl);
 }
 
 function addGather(response: twilio.twiml.VoiceResponse, actionUrl: string) {
@@ -60,27 +59,27 @@ function addGather(response: twilio.twiml.VoiceResponse, actionUrl: string) {
 }
 
 /** Opening TwiML — speak opener lines, then listen */
-export function buildPhoneOpenTwiml(
+export async function buildPhoneOpenTwiml(
   openerParts: string[],
   turnUrl: string,
   baseUrl?: string | null
-): string {
+): Promise<string> {
   const response = new VoiceResponse();
-  playParts(response, openerParts, baseUrl);
+  await playParts(response, openerParts, baseUrl);
   addGather(response, turnUrl);
   response.say({ voice: POLLY_VOICE }, soften(NO_INPUT_FALLBACK));
   return response.toString();
 }
 
 /** Mid-call TwiML — speak reply, listen again */
-export function buildPhoneTurnTwiml(
+export async function buildPhoneTurnTwiml(
   reply: string,
   turnUrl: string,
   baseUrl?: string | null,
   final = false
-): string {
+): Promise<string> {
   const response = new VoiceResponse();
-  playOne(response, reply, baseUrl);
+  await playOne(response, reply, baseUrl);
   if (!final) {
     addGather(response, turnUrl);
     response.say({ voice: POLLY_VOICE }, soften(NO_INPUT_FALLBACK));
@@ -89,23 +88,26 @@ export function buildPhoneTurnTwiml(
 }
 
 /** End call warmly */
-export function buildPhoneFarewellTwiml(farewell: string, baseUrl?: string | null): string {
+export async function buildPhoneFarewellTwiml(
+  farewell: string,
+  baseUrl?: string | null
+): Promise<string> {
   const response = new VoiceResponse();
-  playOne(response, farewell, baseUrl);
+  await playOne(response, farewell, baseUrl);
   response.pause({ length: 1 });
   return response.toString();
 }
 
 /** End call — speak reply then farewell */
-export function buildPhoneReplyAndFarewellTwiml(
+export async function buildPhoneReplyAndFarewellTwiml(
   reply: string,
   farewell: string,
   baseUrl?: string | null
-): string {
+): Promise<string> {
   const response = new VoiceResponse();
-  playOne(response, reply, baseUrl);
+  await playOne(response, reply, baseUrl);
   response.pause({ length: 1 });
-  playOne(response, farewell, baseUrl);
+  await playOne(response, farewell, baseUrl);
   return response.toString();
 }
 

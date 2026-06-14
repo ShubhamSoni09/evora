@@ -1,3 +1,4 @@
+import { requireRoles } from "@/lib/api-auth";
 import { inngest } from "@/lib/inngest";
 import { callPatient, callCaregiverCheckIn, isTwilioConfigured } from "@/lib/twilio";
 import { getPublicAppUrlFromRequest } from "@/lib/app-url";
@@ -22,6 +23,9 @@ function twilioErrorMessage(err: unknown): string {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireRoles("patient", "caretaker");
+  if (auth instanceof Response) return auth;
+
   const body = await req.json().catch(() => ({}));
   const { greeting, immediate, target, messages, alerts } = body as {
     greeting?: string;
@@ -51,7 +55,7 @@ export async function POST(req: Request) {
   const defaultGreeting = `Hey ${PATIENT_NAME.split(" ")[0]}, it's evora! I was thinking about you and wanted to hear your voice. How are you doing?`;
 
   const sessionMessages =
-    Array.isArray(messages) && messages.length > 0 ? messages : getSessionMessages();
+    Array.isArray(messages) && messages.length > 0 ? messages : await getSessionMessages();
   const sessionAlerts = Array.isArray(alerts) ? alerts : [];
   const webhookBase = getPublicAppUrlFromRequest(req);
 

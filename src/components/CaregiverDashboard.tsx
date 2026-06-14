@@ -67,7 +67,7 @@ export default function EvoraDashboard({
     patientPhone: string;
     caregiverConfigured: boolean;
     caregiverPhone: string | null;
-    caregiverPhoneFull?: string;
+    patientConfigured?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -119,10 +119,20 @@ export default function EvoraDashboard({
   const familyMems  = memories.filter(m => m.type === "family");
   const regularMems = memories.filter(m => m.type !== "family");
 
-  function addMemory() {
-    if (!newMemory.trim()) return;
-    setMemories(prev => [...prev, { id: Date.now().toString(), type: "story", label: newMemory, content: newMemory }]);
+  async function addMemory() {
+    const text = newMemory.trim();
+    if (!text) return;
+    const next: Memory[] = [
+      ...memories,
+      { id: Date.now().toString(), type: "story", label: text, content: text },
+    ];
+    setMemories(next);
     setNewMemory("");
+    fetch("/api/session/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memories: next }),
+    }).catch(() => {});
   }
 
   async function callCaregiverCheckIn() {
@@ -211,7 +221,7 @@ export default function EvoraDashboard({
           <div style={{ marginBottom: 8 }}>
             <strong>Caretaker check-in call</strong> → {routing?.caregiverPhone ?? "…"}
             <div style={{ color: "#b0a480", marginTop: 2 }}>
-              Dashboard button rings you at {routing?.caregiverPhoneFull ?? "+1 716 259 6124"}
+              Dashboard button rings your configured caretaker line
             </div>
           </div>
           <div>

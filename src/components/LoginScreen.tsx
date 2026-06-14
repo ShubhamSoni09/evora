@@ -68,7 +68,7 @@ export default function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
 
       <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.04em", color: "#17110a" }}>evora</div>
-        <div style={{ fontSize: 14, color: "#9a8a70", marginTop: 6 }}>choose your portal to sign in</div>
+        <div style={{ fontSize: 14, color: "#9a8a70", marginTop: 6 }}>Sign in to your portal</div>
       </div>
 
       {/* Role cards */}
@@ -236,9 +236,11 @@ export default function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           {loading ? "Signing in…" : "Sign in"}
         </motion.button>
 
-        <div style={{ marginTop: 20, fontSize: 12, color: "#b0a490", textAlign: "center" }}>
-          Demo password: <strong style={{ color: theme.accent }}>evora</strong>
-        </div>
+        {process.env.NODE_ENV !== "production" && (
+          <div style={{ marginTop: 20, fontSize: 12, color: "#b0a490", textAlign: "center" }}>
+            Dev password: <strong style={{ color: theme.accent }}>evora</strong>
+          </div>
+        )}
       </motion.form>
     </div>
   );

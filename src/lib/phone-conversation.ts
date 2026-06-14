@@ -56,7 +56,14 @@ function buildPatientPrompt(messages: Message[], memories: Memory[]) {
     prompt += `\n\nShe's repeating herself (${loop} loop). Stay extra patient — like a friend who's heard it before and still happy to listen. Comfort first, redirect gently to a warm memory.`;
   }
   if (memories.length) {
-    prompt += `\n\nThings you know about her (weave in naturally when it fits):\n${memories.map((m) => `• ${m.label}: ${m.content}`).join("\n")}`;
+    const family = memories.filter((m) => m.type === "family");
+    const rest = memories.filter((m) => m.type !== "family");
+    if (family.length) {
+      prompt += `\n\nFamily notes to share warmly (quote them — e.g. "Sarah wanted me to tell you…"):\n${family.map((m) => `• ${m.content}`).join("\n")}`;
+    }
+    if (rest.length) {
+      prompt += `\n\nOther memories:\n${rest.map((m) => `• ${m.label}: ${m.content}`).join("\n")}`;
+    }
   }
   return prompt;
 }

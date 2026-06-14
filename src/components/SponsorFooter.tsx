@@ -1,6 +1,12 @@
 "use client";
 
 export default function SponsorFooter() {
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.NEXT_PUBLIC_SHOW_SPONSORS !== "true"
+  ) {
+    return null;
+  }
   const sponsors = [
     { name: "xAI", href: "https://x.ai", detail: "Grok" },
     { name: "Vercel", href: "https://vercel.com", detail: "Deploy" },

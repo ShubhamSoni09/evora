@@ -8,7 +8,7 @@ import { getGrounding } from "@/lib/topic-map";
 import type { Memory } from "@/lib/mock-memories";
 import type { Alert, Message } from "@/lib/types";
 import GoldenFlower from "@/components/GoldenFlower";
-import { PATIENT_PHONE } from "@/lib/patient";
+import { isDemoMode } from "@/lib/env";
 import { DOMAINS } from "@/lib/domains";
 
 const patientTheme = DOMAINS.patient;
@@ -35,6 +35,10 @@ const STARTERS = [
   "I miss Harold",
 ];
 
+const SPEECH_END_MS = 380;
+const PCM_SAMPLE_RATE = 22050;
+const CONTEXT_MESSAGE_LIMIT = 12;
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function parseEscalation(text: string) {
   const m = text.match(/<escalate\s+severity="([^"]+)"\s+reason="([^"]+)"\s*\/>/);
@@ -54,17 +58,45 @@ function fmt(s: number) {
   return `${Math.floor(s / 60).toString().padStart(2,"0")}:${(s % 60).toString().padStart(2,"0")}`;
 }
 
-/** Split off complete spoken sentences; leave trailing fragment while still streaming */
+/** Earliest speakable break so TTS starts before a full sentence completes */
+function findFirstChunkBreak(text: string): number {
+  if (text.length < 8) return 0;
+  for (const ch of [",", "—", "–"]) {
+    const i = text.indexOf(ch);
+    if (i >= 6 && i <= 30) return i + 1;
+  }
+  const punct = text.search(/[.!?]/);
+  if (punct >= 6 && punct <= 36) return punct + 1;
+  if (text.length >= 10) {
+    const space = text.lastIndexOf(" ", Math.min(18, text.length));
+    if (space >= 8) return space;
+  }
+  return 0;
+}
+
+/** Split speakable chunks — first chunk is aggressive for low latency */
 function getReadyChunks(text: string, streaming: boolean): string[] {
+  const clean = text.trim();
+  if (!clean) return [];
+
   const sentences: string[] = [];
-  let rest = text.trim();
+  let rest = clean;
   const re = /^(.+?[.!?])(?:\s+|$)/;
+
   while (rest) {
     const m = rest.match(re);
     if (!m) break;
     sentences.push(m[1].trim());
     rest = rest.slice(m[0].length).trim();
   }
+
+  if (streaming && !sentences.length) {
+    const br = findFirstChunkBreak(rest);
+    if (br > 0) {
+      sentences.push(rest.slice(0, br).trim());
+    }
+  }
+
   if (!streaming && rest) sentences.push(rest);
   return sentences;
 }
@@ -289,9 +321,9 @@ function LoopBreakerPanel({ memories, onBreath, onFamily, onDismiss }: {
         boxShadow: "0 4px 24px rgba(196,154,48,0.1), 0 2px 8px rgba(0,0,0,0.05)",
       }}
     >
-      <div style={{ fontSize: 12, color: "#b0a480", marginBottom: 4, letterSpacing: "0.04em", textTransform: "uppercase" }}>loop breaker</div>
+      <div style={{ fontSize: 12, color: "#b0a480", marginBottom: 4, letterSpacing: "0.04em", textTransform: "uppercase" }}>Need a moment?</div>
       <div style={{ fontSize: 14, color: "#17110a", marginBottom: 16, lineHeight: 1.5 }}>
-        evora noticed a pattern. Try switching things up:
+        It&apos;s okay to pause. Here are a few gentle ways to shift the conversation:
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <ModalityButton icon="🌬" label="Breathing" sub="calm down together" onClick={onBreath} />
@@ -359,17 +391,29 @@ export default function EvoraChat({
   const listenAbortRef = useRef(false);
   const timerRef       = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const listenTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const speakGenRef    = useRef(0);
   const ttsCacheRef    = useRef<Map<string, Promise<Blob | null>>>(new Map());
+  const pcmCtxRef      = useRef<AudioContext | null>(null);
+  const pcmEndRef      = useRef(0);
+  const callActiveRef  = useRef(false);
+  const mutedRef       = useRef(false);
+
+  useEffect(() => { callActiveRef.current = callActive; }, [callActive]);
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   useEffect(() => {
+    if (!isDemoMode()) return;
     fetch("/api/voice/config")
       .then((r) => r.json())
-      .then((cfg: { provider?: string; humanVoice?: boolean }) => {
-        if (cfg.provider === "elevenlabs") setVoiceLabel("ElevenLabs voice");
-        else if (cfg.provider === "xai") setVoiceLabel("Grok voice");
+      .then((cfg: { provider?: string; model?: string; stt?: string }) => {
+        if (cfg.provider === "elevenlabs") {
+          setVoiceLabel(`ElevenLabs ${cfg.model ?? "flash"} · ${cfg.stt ?? "mic"}`);
+        } else if (cfg.provider === "xai") {
+          setVoiceLabel("Grok voice · mic");
+        }
       })
       .catch(() => {});
   }, []);
@@ -402,6 +446,7 @@ export default function EvoraChat({
   const stopVoice = useCallback((abort = false) => {
     if (abort) listenAbortRef.current = true;
     clearTimeout(listenTimerRef.current);
+    clearTimeout(silenceTimerRef.current);
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
@@ -448,62 +493,10 @@ export default function EvoraChat({
     window.speechSynthesis.speak(utter);
   }, []);
 
-  const startVoice = useCallback(async () => {
-    if (muted || listening || loading || speaking) return;
-
-    const SpeechRecognitionCtor =
-      typeof window !== "undefined"
-        ? window.SpeechRecognition ?? window.webkitSpeechRecognition
-        : undefined;
-
-    if (SpeechRecognitionCtor) {
-      listenAbortRef.current = false;
-      finalSpeechRef.current = "";
-      setLiveTranscript("");
-      const recognition = new SpeechRecognitionCtor();
-      recognition.lang = "en-US";
-      recognition.continuous = false;
-      recognition.interimResults = true;
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let interim = "";
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const chunk = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalSpeechRef.current += chunk;
-          else interim += chunk;
-        }
-        setLiveTranscript((finalSpeechRef.current + interim).trim());
-      };
-
-      recognition.onerror = () => {
-        setListening(false);
-        setLiveTranscript("");
-        recognitionRef.current = null;
-      };
-
-      recognition.onend = () => {
-        recognitionRef.current = null;
-        setListening(false);
-        if (listenAbortRef.current) {
-          listenAbortRef.current = false;
-          setLiveTranscript("");
-          finalSpeechRef.current = "";
-          return;
-        }
-        const text = finalSpeechRef.current.trim();
-        setLiveTranscript("");
-        finalSpeechRef.current = "";
-        if (text) send(text);
-      };
-
-      recognitionRef.current = recognition;
-      recognition.start();
-      setListening(true);
-      return;
-    }
-
+  const startGrokRecording = useCallback(async () => {
     try {
       listenAbortRef.current = false;
+      finalSpeechRef.current = "";
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -531,20 +524,198 @@ export default function EvoraChat({
         form.append("file", blob, "audio.webm");
         const res = await fetch("/api/voice/stt", { method: "POST", body: form });
         setLiveTranscript("");
-        if (!res.ok) return;
+        if (!res.ok) {
+          setLiveTranscript("couldn't hear you — tap the mic and try again");
+          return;
+        }
         const { text } = await res.json();
         if (text?.trim()) send(text);
+        else setLiveTranscript("didn't catch that — tap the mic and try again");
       };
       recorder.start(250);
       recorderRef.current = recorder;
       setListening(true);
       setLiveTranscript("listening…");
-      listenTimerRef.current = setTimeout(() => stopVoice(), 7000);
+      listenTimerRef.current = setTimeout(() => stopVoice(), 12000);
     } catch {
       setListening(false);
-      setLiveTranscript("");
+      setLiveTranscript("mic blocked — allow microphone in browser settings");
     }
-  }, [muted, listening, loading, speaking, stopVoice]); // eslint-disable-line
+  }, [stopVoice]); // eslint-disable-line
+
+  const startVoice = useCallback(async () => {
+    if (mutedRef.current || listening || loading || speaking) return;
+
+    const SpeechRecognitionCtor =
+      typeof window !== "undefined"
+        ? window.SpeechRecognition ?? window.webkitSpeechRecognition
+        : undefined;
+
+    if (SpeechRecognitionCtor) {
+      listenAbortRef.current = false;
+      finalSpeechRef.current = "";
+      let submitted = false;
+      setLiveTranscript("");
+      const recognition = new SpeechRecognitionCtor();
+      recognition.lang = "en-US";
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      const submitSpeech = (text: string) => {
+        if (submitted) return;
+        const trimmed = text.trim();
+        if (trimmed.length < 2) return;
+        submitted = true;
+        listenAbortRef.current = true;
+        clearTimeout(silenceTimerRef.current);
+        finalSpeechRef.current = "";
+        setLiveTranscript("");
+        setListening(false);
+        try {
+          recognition.stop();
+        } catch {
+          /* ignore */
+        }
+        send(trimmed);
+      };
+
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const chunk = event.results[i][0].transcript;
+          if (event.results[i].isFinal) finalSpeechRef.current += chunk;
+          else interim += chunk;
+        }
+        const live = (finalSpeechRef.current + interim).trim();
+        setLiveTranscript(live);
+
+        const last = event.results[event.results.length - 1];
+        if (!submitted && last?.isFinal && live.length >= 2) {
+          submitSpeech(live);
+          return;
+        }
+
+        clearTimeout(silenceTimerRef.current);
+        if (!submitted && live.length >= 2) {
+          silenceTimerRef.current = setTimeout(() => submitSpeech(live), SPEECH_END_MS);
+        }
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        recognitionRef.current = null;
+        clearTimeout(silenceTimerRef.current);
+        setListening(false);
+        if (event.error === "aborted") return;
+        startGrokRecording();
+      };
+
+      recognition.onend = () => {
+        recognitionRef.current = null;
+        clearTimeout(silenceTimerRef.current);
+        setListening(false);
+        if (listenAbortRef.current || submitted) {
+          listenAbortRef.current = false;
+          return;
+        }
+        const text = finalSpeechRef.current.trim();
+        finalSpeechRef.current = "";
+        setLiveTranscript("");
+        if (text.length >= 2) submitSpeech(text);
+      };
+
+      try {
+        recognitionRef.current = recognition;
+        recognition.start();
+        setListening(true);
+        setLiveTranscript("listening…");
+      } catch {
+        startGrokRecording();
+      }
+      return;
+    }
+
+    await startGrokRecording();
+  }, [listening, loading, speaking, stopVoice, startGrokRecording]); // eslint-disable-line
+
+  const resumeListening = useCallback(() => {
+    if (!mutedRef.current && callActiveRef.current) startVoice();
+  }, [startVoice]);
+
+  const ensurePcmCtx = useCallback(async () => {
+    if (!pcmCtxRef.current) {
+      pcmCtxRef.current = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+    }
+    if (pcmCtxRef.current.state === "suspended") {
+      await pcmCtxRef.current.resume();
+    }
+    return pcmCtxRef.current;
+  }, []);
+
+  const speakStreamingPcm = useCallback(async (text: string, gen: number): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+
+    try {
+      const res = await fetch("/api/voice/tts/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: trimmed }),
+      });
+      if (!res.ok || !res.body) return false;
+
+      const ctx = await ensurePcmCtx();
+      const reader = res.body.getReader();
+      let scheduleAt = Math.max(ctx.currentTime + 0.02, pcmEndRef.current);
+      setSpeaking(true);
+
+      let pending = 0;
+      await new Promise<void>((resolve) => {
+        const doneOne = () => {
+          pending--;
+          if (pending <= 0) resolve();
+        };
+
+        (async () => {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (gen !== speakGenRef.current) {
+              resolve();
+              return;
+            }
+            if (!value?.byteLength) continue;
+
+            const samples = new Int16Array(
+              value.buffer,
+              value.byteOffset,
+              value.byteLength / 2
+            );
+            if (!samples.length) continue;
+
+            const floats = new Float32Array(samples.length);
+            for (let i = 0; i < samples.length; i++) floats[i] = samples[i] / 32768;
+
+            const buf = ctx.createBuffer(1, floats.length, PCM_SAMPLE_RATE);
+            buf.copyToChannel(floats, 0);
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            pending++;
+            src.onended = doneOne;
+            src.start(scheduleAt);
+            scheduleAt += buf.duration;
+            pcmEndRef.current = scheduleAt;
+          }
+          if (pending === 0) resolve();
+        })().catch(() => resolve());
+      });
+
+      if (gen === speakGenRef.current) setSpeaking(false);
+      return gen === speakGenRef.current;
+    } catch {
+      return false;
+    }
+  }, [ensurePcmCtx]);
 
   const fetchTtsBlob = useCallback(async (text: string): Promise<Blob | null> => {
     const key = text.trim();
@@ -609,32 +780,47 @@ export default function EvoraChat({
       const play = () => audio.play().catch(finish);
       if (audio.readyState >= 2) play();
       else {
-        audio.oncanplaythrough = play;
+        audio.oncanplay = play;
         audio.load();
       }
     });
   }, []);
+
+  const speakText = useCallback(async (text: string, gen: number): Promise<void> => {
+    if (gen !== speakGenRef.current || !text.trim()) return;
+
+    const streamed = await speakStreamingPcm(text, gen);
+    if (streamed && gen === speakGenRef.current) return;
+
+    const blob = await fetchTtsBlob(text);
+    if (gen !== speakGenRef.current) return;
+    if (blob) {
+      await playBlob(blob, gen);
+      return;
+    }
+    speakWithBrowser(text);
+  }, [speakStreamingPcm, fetchTtsBlob, playBlob, speakWithBrowser]);
 
   async function speak(text: string, onDone?: () => void) {
     if (speakerOff) { onDone?.(); return; }
     stopVoice(true);
     const gen = ++speakGenRef.current;
     stopSpeaking(false);
-    const blob = await fetchTtsBlob(text);
-    if (gen !== speakGenRef.current) return;
-    if (blob) {
-      await playBlob(blob, gen);
-      if (gen === speakGenRef.current) onDone?.();
-      return;
-    }
-    speakWithBrowser(text, onDone);
+    pcmEndRef.current = 0;
+    await speakText(text, gen);
+    if (gen === speakGenRef.current) onDone?.();
   }
 
   function stopSpeaking(bumpGen = true) {
     if (bumpGen) speakGenRef.current += 1;
+    pcmEndRef.current = 0;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
+    }
+    if (pcmCtxRef.current) {
+      pcmCtxRef.current.close().catch(() => {});
+      pcmCtxRef.current = null;
     }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     setSpeaking(false);
@@ -647,40 +833,37 @@ export default function EvoraChat({
     setLiveTranscript("");
     const currentLoop = detectLoop(messages);
     const next: Message[] = [...messages, { role: "user", content: text }];
-    setMessages(next); setLoading(true);
+    setMessages(next);
+    setLoading(true);
 
     const gen = ++speakGenRef.current;
+    pcmEndRef.current = 0;
     const chunkTexts: string[] = [];
-    const chunkPrefetches = new Map<number, Promise<Blob | null>>();
     let streamDone = false;
+    const contextMessages = next.slice(-CONTEXT_MESSAGE_LIMIT);
 
     const queueChunk = (i: number, chunk: string) => {
       chunkTexts[i] = chunk;
-      chunkPrefetches.set(i, fetchTtsBlob(chunk));
     };
 
     const player = (async () => {
       let idx = 0;
       while (idx < chunkTexts.length || !streamDone) {
-        while (!chunkPrefetches.has(idx) && !streamDone) await sleep(8);
-        if (!chunkPrefetches.has(idx)) break;
-        if (gen !== speakGenRef.current) return;
-        const blob = await chunkPrefetches.get(idx)!;
-        if (gen !== speakGenRef.current) return;
-        if (blob) await playBlob(blob, gen);
-        else speakWithBrowser(chunkTexts[idx]);
-        idx++;
-        if (idx < chunkTexts.length) {
-          const next = chunkPrefetches.get(idx);
-          if (next) next.catch(() => {});
+        while (idx >= chunkTexts.length && !streamDone) {
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
         }
+        if (idx >= chunkTexts.length) break;
+        if (gen !== speakGenRef.current) return;
+        await speakText(chunkTexts[idx], gen);
+        idx++;
       }
-      if (gen === speakGenRef.current && !muted && callActive) startVoice();
+      if (gen === speakGenRef.current && !mutedRef.current && callActiveRef.current) startVoice();
     })();
 
     const res = await fetch("/api/conversation", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: next, loopLevel: currentLoop, memories }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: contextMessages, loopLevel: currentLoop, memories }),
     });
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -731,10 +914,12 @@ export default function EvoraChat({
   }
 
   function deliverFamilyMessage() {
-    const fam = memories.find(m => m.type === "family") ?? memories.find(m => m.type === "voice") ?? memories[0];
+    const fam = memories.filter((m) => m.type === "family").at(-1)
+      ?? memories.find((m) => m.type === "voice")
+      ?? memories[0];
     if (!fam) return;
-    const text = `I have a message from your family. ${fam.content}`;
-    speak(text, () => { if (!muted && callActive) startVoice(); });
+    const from = fam.type === "family" ? "Sarah wanted me to tell you" : "I have a message from your family";
+    speak(`${from}: ${fam.content}`, resumeListening);
   }
 
   function startWithPhrase(phrase: string) {
@@ -748,18 +933,28 @@ export default function EvoraChat({
     speak(CALL_BRIDGES[Math.floor(Math.random() * CALL_BRIDGES.length)], () => send(phrase));
   }
 
+  function greetingWithFamilyNotes(base: string): string {
+    if (messages.length > 0) return base;
+    const family = memories.filter((m) => m.type === "family");
+    if (!family.length) return base;
+    const note = family[family.length - 1];
+    return `${base} Oh — and Sarah wanted me to pass something along. She said: ${note.content}`;
+  }
+
   function answerCall() {
+    callActiveRef.current = true;
     setCallActive(true);
     setDemoStatus(null);
+    void ensurePcmCtx();
     fetch("/api/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "started" }),
     });
-    const greeting = messages.length > 0
+    const base = messages.length > 0
       ? "Hi Margaret, it's evora again. I'm right here — what would you like to talk about?"
       : GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-    speak(greeting, () => { if (!muted && callActive) startVoice(); });
+    speak(greetingWithFamilyNotes(base), resumeListening);
   }
 
   async function triggerDemoPhoneCall() {
@@ -807,14 +1002,15 @@ export default function EvoraChat({
 
   const showLoopBreaker = callActive && (loopLevel === "high" || loopLevel === "medium") && !loopDismissed && !showBreathing;
   const callStatus =
-    loading   ? "thinking..." :
+    loading   ? "I'm thinking…" :
     speaking  ? "evora is speaking" :
-    listening ? "your turn — speak when ready" :
-    "connected";
+    listening ? "I'm listening" :
+    "Connected";
 
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
   const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
   const showLivePanel = listening || liveTranscript || messages.length > 0 || loading || speaking;
+  const latestFamilyNote = memories.filter((m) => m.type === "family").at(-1);
 
   // ── IDLE ─────────────────────────────────────────────────────────────────────
   if (!callActive) {
@@ -822,99 +1018,136 @@ export default function EvoraChat({
       <div style={{
         display: "flex", flexDirection: "column",
         minHeight: "100dvh", alignItems: "center", justifyContent: "center",
-        background: patientTheme.bg, padding: "48px 28px 80px",
+        background: patientTheme.bg, padding: "56px 24px 48px",
       }}>
         <motion.div
           initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
           transition={{ type: "spring", stiffness: 260, damping: 22 }}
-          style={{ marginBottom: 20, filter: "drop-shadow(0 6px 16px rgba(217,119,6,0.18))" }}
+          style={{ marginBottom: 24, filter: "drop-shadow(0 8px 24px rgba(196,154,48,0.14))" }}
         >
-          <GoldenFlower size={96} />
+          <GoldenFlower size={88} />
         </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.12, duration: 0.45 }}
-          style={{ textAlign: "center", marginBottom: 16 }}
+          style={{ textAlign: "center", marginBottom: 20, maxWidth: 320 }}
         >
-          <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: "-0.04em", color: "#17110a", marginBottom: 6 }}>evora</div>
-          <div style={{ fontSize: 14, color: patientTheme.muted }}>just talk — I'm listening</div>
+          <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-0.04em", color: "#17110a", marginBottom: 8 }}>evora</div>
+          <div style={{ fontSize: 15, color: patientTheme.muted, lineHeight: 1.55 }}>
+            A friend who&apos;s always here to listen
+          </div>
         </motion.div>
 
         <GroundingCard />
 
-        <motion.div
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.22 }}
-          style={{ display: "flex", flexWrap: "wrap", gap: 7, justifyContent: "center", maxWidth: 340, margin: "24px 0 28px" }}
-        >
-          {STARTERS.map((s) => (
-            <button
-              key={s}
-              onClick={() => startWithPhrase(s)}
-              style={{
-                padding: "7px 13px", borderRadius: 100, fontSize: 11.5, cursor: "pointer",
-                background: "white", color: "#8a6a28",
-                border: "1px solid rgba(196,154,48,0.22)",
-              }}
-            >
-              {s}
-            </button>
-          ))}
-        </motion.div>
+        {latestFamilyNote && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.18 }}
+            style={{
+              marginTop: 20, maxWidth: 340, width: "100%",
+              padding: "14px 16px", borderRadius: 16,
+              background: "white",
+              border: "1px solid rgba(196,92,92,0.15)",
+              boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
+            }}
+          >
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "#c45c5c", marginBottom: 6 }}>
+              Message from family
+            </div>
+            <div style={{ fontSize: 13, color: "#5a4a30", lineHeight: 1.55 }}>
+              {latestFamilyNote.content}
+            </div>
+          </motion.div>
+        )}
 
-        <motion.button
-          initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.28, type: "spring", stiffness: 300, damping: 22 }}
-          whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
-          onClick={answerCall}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.22 }}
           style={{
-            width: 76, height: 76, borderRadius: "50%", border: "none",
-            background: "linear-gradient(135deg, #1a9e5c, #22c870)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            cursor: "pointer",
-            boxShadow: "0 8px 28px rgba(34,200,112,0.38)",
+            marginTop: 24, width: "100%", maxWidth: 360,
+            padding: "18px 16px 16px", borderRadius: 20,
+            background: "white",
+            border: "1px solid rgba(196,154,48,0.12)",
+            boxShadow: "0 4px 24px rgba(0,0,0,0.04)",
           }}
         >
-          <Phone size={30} color="white" fill="white" />
-        </motion.button>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#a07830", marginBottom: 12, textAlign: "center" }}>
+            Not sure what to say?
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+            {STARTERS.map((s) => (
+              <button
+                key={s}
+                onClick={() => startWithPhrase(s)}
+                style={{
+                  padding: "10px 14px", borderRadius: 100, fontSize: 13, cursor: "pointer",
+                  background: patientTheme.bg, color: "#7a5a20",
+                  border: "1px solid rgba(196,154,48,0.2)",
+                  lineHeight: 1.35,
+                  minHeight: 44,
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </motion.div>
 
-        <div style={{ marginTop: 14, fontSize: 12, color: patientTheme.muted, textAlign: "center" }}>
-          tap to talk with evora
-        </div>
-        {voiceLabel && (
-          <div style={{ marginTop: 6, fontSize: 10, color: "#a89878", textAlign: "center" }}>
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.3, type: "spring", stiffness: 280, damping: 22 }}
+          style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "center" }}
+        >
+          <motion.button
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
+            onClick={answerCall}
+            aria-label="Start conversation with evora"
+            style={{
+              width: 84, height: 84, borderRadius: "50%", border: "none",
+              background: "linear-gradient(145deg, #1a9e5c, #22c870)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              cursor: "pointer",
+              boxShadow: "0 10px 32px rgba(34,200,112,0.35), 0 0 0 6px rgba(34,200,112,0.12)",
+            }}
+          >
+            <Phone size={32} color="white" fill="white" />
+          </motion.button>
+          <div style={{ marginTop: 16, fontSize: 15, fontWeight: 600, color: "#17110a", textAlign: "center" }}>
+            Start conversation
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: patientTheme.muted, textAlign: "center" }}>
+            Tap the button, then speak when you&apos;re ready
+          </div>
+        </motion.div>
+
+        {isDemoMode() && voiceLabel && (
+          <div style={{ marginTop: 20, fontSize: 10, color: "#a89878", textAlign: "center" }}>
             {voiceLabel}
           </div>
         )}
 
-        <button
-          onClick={triggerDemoPhoneCall}
-          disabled={demoCalling}
-          style={{
-            marginTop: 28, background: "none", border: "none", cursor: demoCalling ? "wait" : "pointer",
-            fontSize: 11, color: "#c0b090", textDecoration: "underline", textUnderlineOffset: 3,
-          }}
-        >
-          {demoCalling ? "calling your phone…" : `demo phone call → ${PATIENT_PHONE}`}
-        </button>
+        {isDemoMode() && (
+          <>
+            <button
+              onClick={triggerDemoPhoneCall}
+              disabled={demoCalling}
+              style={{
+                marginTop: 24, background: "none", border: "none", cursor: demoCalling ? "wait" : "pointer",
+                fontSize: 11, color: "#c0b090", textDecoration: "underline", textUnderlineOffset: 3,
+              }}
+            >
+              {demoCalling ? "calling your phone…" : "demo phone call"}
+            </button>
 
-        {demoStatus && (
-          <div style={{
-            marginTop: 10, fontSize: 11, textAlign: "center", maxWidth: 280, lineHeight: 1.5,
-            color: demoStatus.includes("Ringing") ? "#059669" : "#b45309",
-          }}>
-            {demoStatus}
-          </div>
-        )}
-
-        {messages.length > 0 && (
-          <div style={{
-            position: "absolute", bottom: 36, fontSize: 12, color: "#b0a480",
-            padding: "6px 14px", borderRadius: 100,
-            background: "rgba(0,0,0,0.04)", border: "1px solid rgba(0,0,0,0.07)",
-          }}>
-            {messages.filter(m => m.role === "user").length} exchanges this session
-          </div>
+            {demoStatus && (
+              <div style={{
+                marginTop: 10, fontSize: 11, textAlign: "center", maxWidth: 280, lineHeight: 1.5,
+                color: demoStatus.includes("Ringing") ? "#059669" : "#b45309",
+              }}>
+                {demoStatus}
+              </div>
+            )}
+          </>
         )}
       </div>
     );
@@ -936,7 +1169,7 @@ export default function EvoraChat({
     }}>
       <AnimatePresence>
         {showBreathing && (
-          <BreathingExercise onDone={() => { setShowBreathing(false); if (!muted && callActive) startVoice(); }} />
+          <BreathingExercise onDone={() => { setShowBreathing(false); resumeListening(); }} />
         )}
       </AnimatePresence>
 
@@ -961,10 +1194,10 @@ export default function EvoraChat({
 
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.03em", color: "#17110a", marginBottom: 8 }}>evora</div>
-          <div style={{ fontSize: 13, color: "#b0a480", fontVariantNumeric: "tabular-nums", letterSpacing: "0.06em" }}>
+          <div style={{ fontSize: 13, color: "#b0a480", fontVariantNumeric: "tabular-nums", letterSpacing: "0.04em" }}>
             {fmt(duration)}
           </div>
-          {voiceLabel && (
+          {isDemoMode() && voiceLabel && (
             <div style={{ marginTop: 4, fontSize: 10, color: "#c4b896" }}>{voiceLabel}</div>
           )}
         </div>
@@ -1008,7 +1241,7 @@ export default function EvoraChat({
             {listening ? (
               <div style={{ marginBottom: (loading || lastAssistantMsg?.content) ? 18 : 0 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: LISTEN_COLOR, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                  you · live
+                  Listening
                 </div>
                 <div style={{ fontSize: 14, color: "#17110a", lineHeight: 1.7 }}>
                   {liveTranscript || "…"}
@@ -1053,7 +1286,7 @@ export default function EvoraChat({
             }}
           >
             {showTranscript ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-            {showTranscript ? "hide transcript" : "show transcript"}
+            {showTranscript ? "Hide conversation" : "View full conversation"}
           </button>
           <AnimatePresence>
             {showTranscript && (

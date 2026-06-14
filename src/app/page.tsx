@@ -35,16 +35,56 @@ export default function Home() {
     loadSession();
   }, [loadSession]);
 
+  useEffect(() => {
+    async function loadAlerts() {
+      try {
+        const res = await fetch("/api/session/alerts");
+        const data = await res.json();
+        if (Array.isArray(data.alerts)) setAlerts(data.alerts);
+      } catch {
+        /* ignore */
+      }
+    }
+    loadAlerts();
+    const poll = setInterval(loadAlerts, 2500);
+    return () => clearInterval(poll);
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/session/memories")
+      .then((r) => r.json())
+      .then((data: { memories?: Memory[] }) => {
+        if (data.memories?.length) setMemories(data.memories);
+      })
+      .catch(() => {});
+    const poll = setInterval(() => {
+      fetch("/api/session/memories")
+        .then((r) => r.json())
+        .then((data: { memories?: Memory[] }) => {
+          if (data.memories?.length) setMemories(data.memories);
+        })
+        .catch(() => {});
+    }, 2500);
+    return () => clearInterval(poll);
+  }, []);
+
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
   }
 
   function onAlert(a: Omit<Alert, "id" | "timestamp">) {
-    setAlerts((prev) => [
-      { id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(), ...a },
-      ...prev,
-    ]);
+    const optimistic: Alert = {
+      id: Math.random().toString(36).slice(2),
+      timestamp: new Date().toISOString(),
+      ...a,
+    };
+    setAlerts((prev) => [optimistic, ...prev]);
+    fetch("/api/session/alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(a),
+    }).catch(() => {});
   }
 
   if (authLoading) {
@@ -63,7 +103,7 @@ export default function Home() {
   const theme = DOMAINS[user.domain];
 
   return (
-    <div style={{ background: theme.bg, minHeight: "100dvh", color: "#17110a", paddingBottom: 36, transition: "background 0.35s ease" }}>
+    <div style={{ background: theme.bg, minHeight: "100dvh", color: "#17110a", paddingBottom: user.domain === "patient" ? 0 : 36, transition: "background 0.35s ease" }}>
       <UserNav user={user} onLogout={handleLogout} alertCount={highAlerts} />
 
       <main style={{ paddingTop: user.domain === "patient" ? 0 : 72 }}>

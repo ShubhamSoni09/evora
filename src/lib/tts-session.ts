@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import { dbLoadTtsPart, dbSaveTtsSession } from "./db/ephemeral-sessions";
 
 type TtsSession = {
   parts: string[];
@@ -6,30 +7,39 @@ type TtsSession = {
 };
 
 const TTL_MS = 15 * 60 * 1000;
-const sessions = new Map<string, TtsSession>();
+const local = new Map<string, TtsSession>();
 
 function purgeExpired() {
   const now = Date.now();
-  for (const [id, session] of sessions) {
-    if (session.expiresAt <= now) sessions.delete(id);
+  for (const [id, session] of local) {
+    if (session.expiresAt <= now) local.delete(id);
   }
 }
 
-export function registerTtsSession(parts: string[]): string {
+export async function registerTtsSession(parts: string[]): Promise<string> {
   purgeExpired();
   const id = randomBytes(16).toString("hex");
-  sessions.set(id, {
+  const session: TtsSession = {
     parts: parts.map((p) => p.trim()).filter(Boolean),
     expiresAt: Date.now() + TTL_MS,
-  });
+  };
+  local.set(id, session);
+  await dbSaveTtsSession(id, session.parts, session.expiresAt);
   return id;
 }
 
-export function getTtsSessionPart(sessionId: string, index: number): string | null {
+export async function getTtsSessionPart(
+  sessionId: string,
+  index: number
+): Promise<string | null> {
   purgeExpired();
-  const session = sessions.get(sessionId);
+
+  const fromDb = await dbLoadTtsPart(sessionId, index);
+  if (fromDb) return fromDb;
+
+  const session = local.get(sessionId);
   if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(sessionId);
+    local.delete(sessionId);
     return null;
   }
   return session.parts[index] ?? null;
