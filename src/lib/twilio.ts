@@ -1,8 +1,14 @@
 import twilio from "twilio";
 import { PATIENT_NAME, PATIENT_PHONE } from "./patient";
 import { CAREGIVER_PHONE, getCaregiverContacts } from "./contacts";
+import { canUseElevenLabsForPhone } from "./voice-tts";
+import { registerTtsSession } from "./tts-session";
+import { buildTtsPlayUrl } from "./tts-playback-url";
+import { getPublicAppUrl } from "./app-url";
+import { createPhoneSession } from "./phone-call-session";
+import { buildStartCallUrl } from "./twilio-voice-twiml";
 
-/** Warm neural voice — less robotic than standard Polly */
+/** Fallback when ElevenLabs playback URLs are unavailable */
 const EVORA_TWILIO_VOICE = "Polly.Ruth-Neural";
 
 function getClient() {
@@ -21,35 +27,55 @@ export function isTwilioConfigured() {
 }
 
 function escapeXml(s: string) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function softenForSpeech(text: string): string {
   return text
-    .replace(/—/g, ", ")
+    .replace(/[—–…]/g, ", ")
+    .replace(/[^\x20-\x7E]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function wrapSoothingSsml(text: string): string {
-  const softened = softenForSpeech(text);
-  const withBreaks = escapeXml(softened)
-    .replace(/\. /g, '.<break time="550ms"/> ')
-    .replace(/\? /g, '?<break time="650ms"/> ')
-    .replace(/, /g, ',<break time="280ms"/> ');
-  return `<prosody rate="94%" pitch="-4%">${withBreaks}</prosody>`;
-}
-
 function sayBlock(text: string) {
-  return `<Say voice="${EVORA_TWILIO_VOICE}" language="en-US">${wrapSoothingSsml(text)}</Say>`;
+  const safe = escapeXml(softenForSpeech(text));
+  return `<Say voice="${EVORA_TWILIO_VOICE}" language="en-US" rate="95%">${safe}</Say>`;
 }
 
-function buildSoothingTwiml(parts: string[]) {
+function buildPollyTwiml(parts: string[]) {
   return (
     `<Response>` +
     parts.map((p) => sayBlock(p)).join(`<Pause length="1"/>`) +
     `</Response>`
   );
+}
+
+function buildElevenLabsTwiml(parts: string[]) {
+  const sessionId = registerTtsSession(parts);
+  const segments = parts
+    .map((_, i) => buildTtsPlayUrl(sessionId, i))
+    .filter((url): url is string => Boolean(url));
+
+  if (segments.length !== parts.length) {
+    return buildPollyTwiml(parts);
+  }
+
+  const body = segments
+    .map((url) => `<Play>${escapeXml(url)}</Play><Pause length="1"/>`)
+    .join("");
+
+  return `<Response>${body}</Response>`;
+}
+
+function buildVoiceTwiml(parts: string[]) {
+  const useElevenLabs = canUseElevenLabsForPhone() && getPublicAppUrl();
+  return useElevenLabs ? buildElevenLabsTwiml(parts) : buildPollyTwiml(parts);
 }
 
 function fromNumber() {
@@ -61,23 +87,56 @@ function fromNumber() {
 function buildCaregiverAlertTwiml(reason: string, summary?: string) {
   const detail = summary?.trim() || reason;
   const msg = `Urgent evora alert for ${PATIENT_NAME}. ${detail}. Please check on ${PATIENT_NAME.split(" ")[0]} when you can.`;
-  return buildSoothingTwiml([msg, msg]);
+  return buildVoiceTwiml([msg, msg]);
 }
 
 function buildProactiveTwiml(greeting: string) {
-  const followUp = `Whenever you'd like to keep talking, just open evora. I'll be right here with you.`;
-  return buildSoothingTwiml([greeting, followUp]);
+  return buildVoiceTwiml([
+    greeting,
+    "I'm so glad you picked up. What's been on your mind?",
+  ]);
 }
 
 function buildCaregiverCheckInTwiml(parts: string[]) {
-  const closing = `That's the memory map for now. Take good care of yourself too.`;
-  return buildSoothingTwiml([...parts, closing]);
+  return buildVoiceTwiml([
+    ...parts,
+    `That's everything for now. Anything on your mind about ${PATIENT_NAME.split(" ")[0]}, or anything you'd like me to keep an eye on?`,
+  ]);
+}
+
+function canInteractivePhoneCalls(webhookBase?: string | null) {
+  return Boolean(webhookBase ?? getPublicAppUrl());
 }
 
 /** Daily check-in — rings the patient */
-export async function callPatient(greeting: string, to = PATIENT_PHONE) {
+export async function callPatient(
+  greeting: string,
+  to = PATIENT_PHONE,
+  webhookBase?: string | null
+) {
   const client = getClient();
   if (!client) throw new Error("Twilio not configured");
+
+  const base = webhookBase ?? getPublicAppUrl();
+  const startUrl = canInteractivePhoneCalls(base)
+    ? buildStartCallUrl(
+        createPhoneSession({
+          role: "patient",
+          openerParts: [greeting],
+          webhookBase: base,
+        }),
+        base
+      )
+    : null;
+
+  if (startUrl) {
+    return client.calls.create({
+      to,
+      from: fromNumber(),
+      url: startUrl,
+      method: "POST",
+    });
+  }
 
   return client.calls.create({
     to,
@@ -86,10 +145,11 @@ export async function callPatient(greeting: string, to = PATIENT_PHONE) {
   });
 }
 
-/** Caretaker check-in — rings caregiver at +17162596124 */
+/** Caretaker check-in — rings caregiver */
 export async function callCaregiverCheckIn(
   script: string | string[],
-  to = CAREGIVER_PHONE
+  to = CAREGIVER_PHONE,
+  webhookBase?: string | null
 ) {
   const client = getClient();
   if (!client) throw new Error("Twilio not configured");
@@ -99,8 +159,36 @@ export async function callCaregiverCheckIn(
     ? script
     : [
         script ||
-          `Hi James, it's evora. I wanted to check in with you about ${PATIENT_NAME}. From what I can see, she's been doing alright.`,
+          `Hey James, it's evora. I wanted to catch you up on how ${PATIENT_NAME.split(" ")[0]}'s been doing.`,
       ];
+
+  const openerParts = [
+    ...parts,
+    `That's everything for now.`,
+    `Anything on your mind about ${PATIENT_NAME.split(" ")[0]}, or anything you'd like me to keep an eye on?`,
+  ];
+
+  const base = webhookBase ?? getPublicAppUrl();
+  const startUrl = canInteractivePhoneCalls(base)
+    ? buildStartCallUrl(
+        createPhoneSession({
+          role: "caregiver",
+          openerParts,
+          maxTurns: 5,
+          webhookBase: base,
+        }),
+        base
+      )
+    : null;
+
+  if (startUrl) {
+    return client.calls.create({
+      to,
+      from: fromNumber(),
+      url: startUrl,
+      method: "POST",
+    });
+  }
 
   return client.calls.create({
     to,

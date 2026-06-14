@@ -11,10 +11,29 @@ Built with **xAI · Vercel · Cursor · Inngest**
 - **Models used:**
   - `grok-3-mini` — live companion conversation (streaming)
   - `grok-3` — cognition reports + escalation summaries
-- **Grok Voice:**
-  - TTS: `eve` voice via `POST /v1/tts` (evora speaks)
+- **Grok Voice (fallback TTS):**
+  - TTS: `ara` voice via `POST /v1/tts`
   - STT: `POST /v1/stt` (patient speech → text)
   - Proxied through `/api/voice/tts` and `/api/voice/stt`
+
+## 1b. ElevenLabs (recommended — most natural voice)
+- Go to https://elevenlabs.io → Profile → API Keys
+- Add to `.env.local`:
+  ```
+  ELEVENLABS_API_KEY=sk_...
+  # optional tuning:
+  ELEVENLABS_VOICE_ID=XrExE9yKIg1WjnnlVkGX   # Matilda (warm default)
+  ELEVENLABS_MODEL=eleven_flash_v2_5           # fast, conversational in-app
+  ELEVENLABS_PHONE_MODEL=eleven_multilingual_v2 # richer tone on phone calls
+  TTS_PROVIDER=auto                            # auto | elevenlabs | xai
+  ```
+- When `ELEVENLABS_API_KEY` is set, evora uses ElevenLabs for in-app speech automatically.
+- **Phone calls** use ElevenLabs + live two-way conversation when deployed (Vercel sets `VERCEL_URL`) or when you expose the app publicly:
+  ```
+  NEXT_PUBLIC_APP_URL=https://your-ngrok-or-vercel-url
+  ```
+  Twilio listens for speech, Grok replies, ElevenLabs speaks back — up to ~8 turns for Margaret, ~5 for James.
+  Locally on `localhost` only, calls are one-way (no webhook for Twilio to reach you).
 
 ## 2. Inngest (background workflows)
 - Go to https://app.inngest.com → Create account → New app
@@ -45,12 +64,28 @@ Open http://localhost:3000 → tap the green call button → hold **Space** to s
 ```bash
 npx vercel --prod
 ```
-- Set `XAI_API_KEY`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` in the Vercel dashboard
+
+**Environment variables** (Vercel → Project → Settings → Environment Variables):
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `XAI_API_KEY` | Yes | Grok chat + phone replies |
+| `ELEVENLABS_API_KEY` | Recommended | Natural voice in-app + on phone |
+| `TWILIO_ACCOUNT_SID` | For phone | Twilio console |
+| `TWILIO_AUTH_TOKEN` | For phone | Twilio console |
+| `TWILIO_PHONE_NUMBER` | For phone | Your Twilio number |
+| `PATIENT_PHONE` | For phone | e.g. `+17167509405` |
+| `CAREGIVER_PHONE` | For phone | Caregiver number |
+| `INNGEST_EVENT_KEY` | For workflows | Inngest dashboard |
+| `INNGEST_SIGNING_KEY` | For workflows | Inngest dashboard |
+
+On Vercel, two-way phone calls work automatically (`VERCEL_URL` is set). No ngrok needed.
+
 - In Inngest dashboard: add your Vercel URL as the production endpoint (`https://your-app.vercel.app/api/inngest`)
 
 ## Demo flow
 1. Patient taps **call evora** → Inngest logs `evora/call-started`
-2. Evora greets via **Grok Voice** (TTS), patient speaks via **Grok STT**
+2. Evora greets via **ElevenLabs** (or Grok Voice fallback), patient speaks via **Grok STT**
 3. Grok-3-mini streams warm companion replies
 4. On distress/loops → `<escalate>` tag → Inngest `evora/escalation` workflow
 5. Caregiver dashboard shows alerts + can generate **Grok-3** cognition report

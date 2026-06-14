@@ -45,7 +45,7 @@ export const onManualPatientCall = inngest.createFunction(
 
     const greeting =
       event.data.greeting ??
-      `Hi Margaret, it's evora. I'm calling to check in on you. How are you feeling?`;
+      `Hi Margaret, it's evora. I was just thinking about you — how are you doing today?`;
 
     const call = await step.run("call-patient", () => callPatient(greeting));
 

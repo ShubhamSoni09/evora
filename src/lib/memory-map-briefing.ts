@@ -15,8 +15,8 @@ function toneForSpeech(label: string): string {
 function lastUserLine(messages: Message[]): string | null {
   const last = [...messages].reverse().find((m) => m.role === "user" && m.content?.trim());
   if (!last) return null;
-  const text = last.content.trim();
-  return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+  const text = last.content.trim().replace(/[^\x20-\x7E]/g, " ");
+  return text.length > 90 ? `${text.slice(0, 90)}` : text;
 }
 
 /** Spoken script for caretaker check-in — mirrors the conversation memory map */
@@ -25,13 +25,13 @@ export function buildMemoryMapBriefing(
   alerts: Pick<Alert, "severity" | "reason">[] = []
 ): string[] {
   const first = PATIENT_NAME.split(" ")[0] ?? "Margaret";
-  const opener = `Hi James, it's evora. I'm calling with a memory map update for ${first}.`;
+  const opener = `Hey James, it's evora. I wanted to give you a quick update on how ${first}'s been doing.`;
 
   const userMsgs = messages.filter((m) => m.role === "user" && m.content?.trim());
   if (!userMsgs.length) {
     return [
       opener,
-      `She hasn't talked with me yet this session. When she's ready, she can open evora and start a call.`,
+      `She hasn't chatted with me yet today. Whenever she's in the mood, she can just open evora and we'll talk.`,
     ];
   }
 

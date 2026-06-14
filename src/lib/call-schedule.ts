@@ -16,7 +16,7 @@ export const PROACTIVE_CALL_SLOTS: CallSlot[] = [
     hour: 10,
     minute: 0,
     greeting:
-      "Hi Margaret, it's evora. I was just thinking about you and wanted to hear your voice. How are you feeling right now?",
+      "Hey Margaret, it's evora! I was just thinking about you and thought I'd call. How's your morning going?",
   },
   {
     id: "sundown",
@@ -24,7 +24,7 @@ export const PROACTIVE_CALL_SLOTS: CallSlot[] = [
     hour: 17,
     minute: 0,
     greeting:
-      "Hi Margaret, it's evora. The evening's settling in — I'm here with you. What's on your mind right now?",
+      "Hey Margaret, it's evora. The day's winding down — I wanted to check in and hear your voice. What's going on with you?",
   },
   {
     id: "evening",
@@ -32,7 +32,7 @@ export const PROACTIVE_CALL_SLOTS: CallSlot[] = [
     hour: 19,
     minute: 0,
     greeting:
-      "Hi Margaret, it's evora. I wanted to check in before the night gets quiet. How are you feeling?",
+      "Hi Margaret, it's evora. Before things get quiet tonight, I just wanted to say hi. How are you feeling?",
   },
 ];
 

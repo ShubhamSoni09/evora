@@ -348,6 +348,7 @@ export default function EvoraChat({
   const [demoCalling, setDemoCalling] = useState(false);
   const [demoStatus, setDemoStatus] = useState<string | null>(null);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [voiceLabel, setVoiceLabel] = useState<string | null>(null);
 
   const bottomRef      = useRef<HTMLDivElement>(null);
   const audioRef       = useRef<HTMLAudioElement | null>(null);
@@ -362,6 +363,16 @@ export default function EvoraChat({
   const ttsCacheRef    = useRef<Map<string, Promise<Blob | null>>>(new Map());
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  useEffect(() => {
+    fetch("/api/voice/config")
+      .then((r) => r.json())
+      .then((cfg: { provider?: string; humanVoice?: boolean }) => {
+        if (cfg.provider === "elevenlabs") setVoiceLabel("ElevenLabs voice");
+        else if (cfg.provider === "xai") setVoiceLabel("Grok voice");
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (messages.length === 0) return;
@@ -567,9 +578,15 @@ export default function EvoraChat({
 
   useEffect(() => {
     if (callActive) return;
-    for (const phrase of [...GREETINGS.slice(0, 2), ...CALL_BRIDGES]) {
-      fetchTtsBlob(phrase).catch(() => {});
-    }
+    const phrases = [...GREETINGS.slice(0, 2), ...CALL_BRIDGES];
+    let cancelled = false;
+    (async () => {
+      for (const phrase of phrases) {
+        if (cancelled) break;
+        await fetchTtsBlob(phrase).catch(() => {});
+      }
+    })();
+    return () => { cancelled = true; };
   }, [callActive, fetchTtsBlob]);
 
   const playBlob = useCallback((blob: Blob, gen: number): Promise<void> => {
@@ -763,7 +780,11 @@ export default function EvoraChat({
         setDemoStatus(data.error ?? "Call failed — check Twilio keys in .env.local");
         return;
       }
-      setDemoStatus(`Ringing ${data.to} — answer your phone to hear evora!`);
+      setDemoStatus(
+        data.interactive
+          ? `Ringing ${data.to} — answer and talk with evora!`
+          : `Ringing ${data.to} — set NEXT_PUBLIC_APP_URL (ngrok) for a live two-way phone call`
+      );
     } catch {
       setDemoStatus("Could not place call. Is the dev server running?");
     } finally {
@@ -860,6 +881,11 @@ export default function EvoraChat({
         <div style={{ marginTop: 14, fontSize: 12, color: patientTheme.muted, textAlign: "center" }}>
           tap to talk with evora
         </div>
+        {voiceLabel && (
+          <div style={{ marginTop: 6, fontSize: 10, color: "#a89878", textAlign: "center" }}>
+            {voiceLabel}
+          </div>
+        )}
 
         <button
           onClick={triggerDemoPhoneCall}
@@ -938,6 +964,9 @@ export default function EvoraChat({
           <div style={{ fontSize: 13, color: "#b0a480", fontVariantNumeric: "tabular-nums", letterSpacing: "0.06em" }}>
             {fmt(duration)}
           </div>
+          {voiceLabel && (
+            <div style={{ marginTop: 4, fontSize: 10, color: "#c4b896" }}>{voiceLabel}</div>
+          )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, minHeight: 44 }}>

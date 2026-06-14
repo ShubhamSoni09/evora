@@ -1,5 +1,6 @@
 import { inngest } from "@/lib/inngest";
 import { callPatient, callCaregiverCheckIn, isTwilioConfigured } from "@/lib/twilio";
+import { getPublicAppUrlFromRequest } from "@/lib/app-url";
 import { PATIENT_PHONE, PATIENT_NAME } from "@/lib/patient";
 import { CAREGIVER_PHONE } from "@/lib/contacts";
 import { getSessionMessages } from "@/lib/live-session";
@@ -47,26 +48,29 @@ export async function POST(req: Request) {
     );
   }
 
-  const defaultGreeting = `Hi ${PATIENT_NAME.split(" ")[0]}, it's evora. I'm calling to check in on you. How are you feeling?`;
+  const defaultGreeting = `Hey ${PATIENT_NAME.split(" ")[0]}, it's evora! I was thinking about you and wanted to hear your voice. How are you doing?`;
 
   const sessionMessages =
     Array.isArray(messages) && messages.length > 0 ? messages : getSessionMessages();
   const sessionAlerts = Array.isArray(alerts) ? alerts : [];
+  const webhookBase = getPublicAppUrlFromRequest(req);
 
   if (immediate) {
     try {
       const call = toCaregiver
         ? await callCaregiverCheckIn(
             greeting ? [greeting] : buildMemoryMapBriefing(sessionMessages, sessionAlerts),
-            destination
+            destination,
+            webhookBase
           )
-        : await callPatient(greeting ?? defaultGreeting, destination);
+        : await callPatient(greeting ?? defaultGreeting, destination, webhookBase);
       return Response.json({
         status: "calling",
         to: destination,
         target: toCaregiver ? "caregiver" : "patient",
         callSid: call.sid,
         twilioStatus: call.status,
+        interactive: Boolean(webhookBase),
       });
     } catch (err) {
       console.error("[call-patient]", err);

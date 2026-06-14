@@ -1,3 +1,5 @@
+import { softenSpeechText } from "@/lib/speech-text";
+
 /**
  * xAI Grok Voice — TTS & STT for in-app calls
  * TTS: POST /v1/tts — voice `ara` (warm, conversational)
@@ -7,15 +9,7 @@
 export const EVORA_VOICE = "ara";
 export const EVORA_TTS_SPEED = 0.86;
 
-/** Insert natural pauses so TTS sounds less rushed or robotic */
-export function softenSpeechText(text: string): string {
-  return text
-    .replace(/—/g, ", ")
-    .replace(/;\s*/g, ", ")
-    .replace(/\.\s+/g, ". ")
-    .replace(/,\s*/g, ", ")
-    .trim();
-}
+export { softenSpeechText };
 
 const XAI_BASE = "https://api.x.ai/v1";
 
