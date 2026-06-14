@@ -1,6 +1,6 @@
 import { Inngest } from "inngest";
 
-export const inngest = new Inngest({ id: "pulseroute" });
+export const inngest = new Inngest({ id: "evora" });
 
 export type EmergencyStartedEvent = {
   name: "emergency/started";

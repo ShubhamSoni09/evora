@@ -9,7 +9,7 @@ export async function POST(req: Request) {
   const { toPhone, doctorName, assessment, appUrl } = await req.json();
 
   const briefing = [
-    `PulseRoute emergency alert.`,
+    `evora alert.`,
     `Doctor ${doctorName}, you have an incoming patient.`,
     assessment.patient_age ? `Patient is a ${assessment.patient_age} year old ${assessment.gender ?? "individual"}.` : "",
     `Chief complaint: ${assessment.symptoms?.join(", ")}.`,

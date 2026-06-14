@@ -47,7 +47,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are PulseRoute, an emergency medical intake AI. You help people in medical emergencies get to the right care fast.
+const SYSTEM_PROMPT = `You are evora, an emergency medical intake AI. You help people in medical emergencies get to the right care fast.
 
 Your job:
 1. Ask what's happening (one focused question at a time)

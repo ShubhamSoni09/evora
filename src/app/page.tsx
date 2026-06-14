@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import EvoraChat from "@/components/ClaraChat";
+import EvoraChat from "@/components/EvoraChat";
 import EvoraDashboard from "@/components/CaregiverDashboard";
 import FamilyPortal from "@/components/FamilyPortal";
 import UserNav, { type SessionUser } from "@/components/UserNav";
