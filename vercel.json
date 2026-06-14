@@ -1,7 +1,1 @@
-{
-  "env": {
-    "XAI_API_KEY": "@xai-api-key",
-    "INNGEST_EVENT_KEY": "@inngest-event-key",
-    "INNGEST_SIGNING_KEY": "@inngest-signing-key"
-  }
-}
+{}
